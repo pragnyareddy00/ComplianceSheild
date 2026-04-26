@@ -5,15 +5,69 @@ import { motion } from "framer-motion";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { useAuth } from "@/context/AuthContext";
+import { saveAnalysis } from "@/lib/api";
 
 const UploadAnalyze = () => {
+  const { user } = useAuth();
   const [file, setFile] = useState(null);
   const [prompt, setPrompt] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
 
+  const handleAnalyze = async () => {
+    if (!file || !file.actualFile) return;
+    setIsLoading(true);
+    
+    try {
+      const formData = new FormData();
+      formData.append("file", file.actualFile);
+      if (prompt) {
+        formData.append("prompt", prompt);
+      }
+
+      const response = await fetch("http://127.0.0.1:8088/analyze", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => null);
+        const errorMsg = errorData?.detail || response.statusText;
+        throw new Error(`Server Error: ${errorMsg}`);
+      }
+
+      const report = await response.json();
+      
+      if (user) {
+          const analysisData = {
+              user_id: user.id,
+              document_name: file.actualFile.name,
+              summary: prompt || "Full compliance audit",
+              status: report.summary_card?.status || "Compliant",
+              risk_level: report.summary_card?.score > 80 ? 'Low' : report.summary_card?.score > 60 ? 'Medium' : 'High',
+              issues_found: report.compliance_feed?.length || 0,
+              report_data: report
+          };
+          const { data: savedData } = await saveAnalysis(analysisData);
+          if (savedData) {
+              navigate("/results", { state: { report, analysisId: savedData.id } });
+              return;
+          }
+      }
+
+      navigate("/results", { state: { report } });
+    } catch (error) {
+      console.error("Error analyzing document:", error);
+      alert(`Backend Analysis Failed!\n\n${error.message}\n\n(If you see "Failed to fetch", the server isn't running)`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleFile = useCallback((f) => {
-    setFile({ name: f.name, type: f.type || f.name.split(".").pop() || "unknown" });
+    setFile({ name: f.name, type: f.type || f.name.split(".").pop() || "unknown", actualFile: f });
   }, []);
 
   const onDrop = useCallback(
@@ -115,11 +169,11 @@ const UploadAnalyze = () => {
             </section>
 
             <button
-              onClick={() => navigate("/results")}
-              disabled={!file || !prompt.trim()}
+              onClick={handleAnalyze}
+              disabled={!file || isLoading}
               className="w-full flex items-center justify-center gap-2 rounded-xl bg-primary px-6 py-4 text-base font-semibold text-primary-foreground transition-all hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed shadow-md">
-              Start Analysis Workflow
-              <ArrowRight className="h-5 w-5" />
+              {isLoading ? "Analyzing via LangGraph..." : "Start Analysis Workflow"}
+              {!isLoading && <ArrowRight className="h-5 w-5" />}
             </button>
           </div>
 
