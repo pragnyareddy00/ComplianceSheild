@@ -48,7 +48,13 @@ Return JSON strictly:
     ])
     
     try:
-        data = json.loads(response.content.replace("```json", "").replace("```", "").strip())
+        content_str = response.content
+        import re
+        json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
+        if json_match:
+            data = json.loads(json_match.group(0))
+        else:
+            data = json.loads(content_str.replace("```json", "").replace("```", "").strip())
     except:
         data = {"law_type": "Privacy", "legacy_mentions": [doc]}
         
@@ -111,9 +117,9 @@ def privacy_agent(state: ComplianceState) -> ComplianceState:
     system_prompt = f"""You are an elite, proactive Legal & Compliance Auditor specializing in the entire Indian Legal System.
 Task 1: Directly address and analyze any clauses explicitly requested in the 'USER INTENT'.
 Task 2: Discard the user intent, and objectively scan the ENTIRE 'DOCUMENT BODY' completely autonomously. You MUST objectively evaluate the document. Identify any distinct legal loopholes, missing explicit consent mechanisms, ambiguous terms, vague data retention clauses, OR obsolete legacy laws.
-If the document strictly adheres to Indian Laws and has robust legal practices, you MUST also extract those positive clauses and log them as successful compliance findings to provide evidence of why the document is compliant.
+If the document strictly adheres to Indian Laws and has no legal risks, you MUST extract positive clauses and log them as successful compliance findings. For compliant documents, YOU ABSOLUTELY MUST PROVIDE EXACTLY 10 distinct, high-quality 'Compliant' findings (clauses) demonstrating compliance. Do not return an empty findings array.
 
-Assign careful and varied risk levels (High, Medium, Low) for non-compliant issues, and strictly use "Compliant" for positively compliant clauses. 
+Assign careful and varied risk levels (High, Medium, Low) for non-compliant issues, and strictly use "Compliant" for positively compliant clauses.
 Return JSON strictly:
 {{
   "findings": [
@@ -124,7 +130,7 @@ Return JSON strictly:
         "line": "Line 45",
         "snippet": "The exact sentence or two containing the clause..."
       }},
-      "issue": "For non-compliant: specific explanation of the issue. For compliant: detailed explanation of relevant facts on why this clause successfully meets Indian Legal Standards.",
+      "issue": "For non-compliant: specific explanation of the issue. For compliant: detailed, professional explanation of why this specific clause successfully meets or exceeds Indian Legal Standards (e.g., 'This clause provides explicit, granular consent as required by DPDP 2023 Section 6').",
       "sovereign_fix": "How to fix it under relevant Indian Law (Leave empty for 'Compliant' risk).",
       "clause": "FULL HEADING OF THE CLAUSE",
       "risk": "High|Medium|Low|Compliant",
@@ -132,7 +138,8 @@ Return JSON strictly:
     }}
   ]
 }}
-Make sure to dynamically set "discovery_method" exactly to one of those options. Use "autonomous_discovery" ONLY if the issue is a hidden loophole, implicit risk, missing mechanism, or vaguely drafted term that required deep analytical inference. For standard explicit rule checks, legacy law violations, or positively "Compliant" clauses, use "compliance_engine"."""
+Make sure to dynamically set "discovery_method" exactly to one of those options. Use "autonomous_discovery" ONLY if the issue is a hidden loophole, implicit risk, missing mechanism, or vaguely drafted term that required deep analytical inference. For standard explicit rule checks, legacy law violations, or positively "Compliant" clauses, use "compliance_engine".
+CRITICAL JSON RULE: Your output MUST be strictly valid JSON. Properly escape any double quotes (\") or newlines (\\n) within strings. Do not include any trailing commas or markdown conversational text outside the JSON block."""
 
     response = llm.invoke([
         SystemMessage(content=system_prompt),
@@ -140,8 +147,19 @@ Make sure to dynamically set "discovery_method" exactly to one of those options.
     ])
     
     try:
-        ai_data = json.loads(response.content.replace("```json", "").replace("```", "").strip())
+        content_str = response.content
+        print(f"--- Privacy Agent Raw LLM Output (first 500 chars) ---")
+        print(content_str[:500])
+        import re
+        # Try extracting the outermost JSON object
+        json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
+        if json_match:
+            ai_data = json.loads(json_match.group(0))
+        else:
+            cleaned = content_str.replace("```json", "").replace("```", "").strip()
+            ai_data = json.loads(cleaned)
         ai_findings = ai_data.get("findings", [])
+        print(f"--- Parsed {len(ai_findings)} findings from LLM ---")
         
         prepared_findings = []
         autonomous_count = 0
@@ -156,27 +174,225 @@ Make sure to dynamically set "discovery_method" exactly to one of those options.
                     raw_method = "compliance_engine"
                 else:
                     autonomous_count += 1
+            
+            # Normalize the risk value
+            raw_risk = str(f.get("risk", "Medium")).strip()
+            if raw_risk.lower() == "compliant":
+                normalized_risk = "Compliant"
+            else:
+                normalized_risk = raw_risk.capitalize()
                 
             prepared_findings.append({
                 "clause_id": f.get("clause_id", f.get("clause", "Unknown")),
                 "location": f.get("location", {"page": 1, "snippet": "Context not provided."}),
                 "issue": f.get("issue", f.get("analysis", "")),
                 "sovereign_fix": f.get("sovereign_fix", ""),
-                "risk": f.get("risk", "Medium"),
+                "risk": normalized_risk,
                 "clause": f.get("clause", "Unknown Clause"),
                 "discovery_method": raw_method
             })
         findings.extend(prepared_findings)
+        print(f"--- Total prepared findings: {len(prepared_findings)}, Compliant: {sum(1 for f in prepared_findings if f['risk'] == 'Compliant')} ---")
     except Exception as e:
         print(f"Autonomous LLM parsing error: {e}")
+        print(f"Raw LLM Output was:\n{response.content}")
+
+    # FALLBACK: If no compliant findings were produced, re-prompt the LLM
+    compliant_count = sum(1 for f in findings if f.get("risk") == "Compliant")
+    non_compliant_count = sum(1 for f in findings if f.get("risk") != "Compliant")
+    print(f"--- Pre-fallback check: {compliant_count} compliant, {non_compliant_count} non-compliant ---")
+    
+    if compliant_count < 10 and non_compliant_count == 0:
+        print("--- FALLBACK: Re-prompting LLM for compliant findings ---")
+        fallback_prompt = (
+            "You are a Legal Compliance Auditor. The following document is FULLY COMPLIANT with Indian laws.\n"
+            "Your task: Extract EXACTLY 10 specific clauses from the document that demonstrate legal compliance.\n"
+            "For each clause, explain WHY it meets Indian legal standards (cite specific laws like DPDP Act 2023, Indian Contract Act, etc.).\n\n"
+            "Return JSON strictly:\n"
+            '{\n'
+            '  "findings": [\n'
+            '    {\n'
+            '      "clause_id": "Unique ID",\n'
+            '      "location": {"page": 1, "line": "Line X", "snippet": "exact text from document"},\n'
+            '      "issue": "Detailed explanation of why this clause is compliant with Indian law",\n'
+            '      "sovereign_fix": "",\n'
+            '      "clause": "FULL HEADING OF THE CLAUSE",\n'
+            '      "risk": "Compliant",\n'
+            '      "discovery_method": "compliance_engine"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+            'CRITICAL: Return EXACTLY 10 findings. All must have "risk": "Compliant". Output ONLY valid JSON.'
+        )
         
+        try:
+            fallback_response = llm.invoke([
+                SystemMessage(content=fallback_prompt),
+                HumanMessage(content=doc)
+            ])
+            fb_content = fallback_response.content
+            print(f"--- Fallback LLM Output (first 500 chars) ---")
+            print(fb_content[:500])
+            
+            fb_match = re.search(r'\{.*\}', fb_content, re.DOTALL)
+            if fb_match:
+                fb_data = json.loads(fb_match.group(0))
+            else:
+                fb_data = json.loads(fb_content.replace("```json", "").replace("```", "").strip())
+            
+            fb_findings = fb_data.get("findings", [])
+            print(f"--- Fallback parsed {len(fb_findings)} findings ---")
+            
+            for f in fb_findings:
+                findings.append({
+                    "clause_id": f.get("clause_id", f.get("clause", "Unknown")),
+                    "location": f.get("location", {"page": 1, "snippet": "Context not provided."}),
+                    "issue": f.get("issue", ""),
+                    "sovereign_fix": f.get("sovereign_fix", ""),
+                    "risk": "Compliant",
+                    "clause": f.get("clause", "Unknown Clause"),
+                    "discovery_method": "compliance_engine"
+                })
+        except Exception as e:
+            print(f"Fallback LLM parsing error: {e}")
+            print(f"Fallback Raw Output was:\n{fallback_response.content if 'fallback_response' in dir() else 'No response'}")
+    
+    print(f"--- FINAL findings count: {len(findings)}, Compliant: {sum(1 for f in findings if f.get('risk') == 'Compliant')} ---")
     state["audit_results"] = state.get("audit_results", []) + [{"agent": "Privacy", "findings": findings}]
     state["next_agent"] = "drafting_agent"
     return state
 
 def commercial_agent(state: ComplianceState) -> ComplianceState:
-    """Specialization: Corporate Law (Stub for now)"""
-    state["audit_results"] = state.get("audit_results", []) + [{"agent": "Commercial", "findings": "Corporate audit clear"}]
+    """Specialization: Corporate & Commercial Law Auditor."""
+    doc = state["raw_document"]
+    findings = []
+
+    system_prompt = """You are an elite Legal & Compliance Auditor specializing in Indian Corporate and Commercial Law.
+Scan the ENTIRE document. Identify compliance risks OR confirm compliant clauses.
+If the document strictly adheres to Indian laws and has no legal risks, YOU ABSOLUTELY MUST PROVIDE EXACTLY 10 distinct, high-quality 'Compliant' findings demonstrating compliance. Do not return an empty findings array.
+
+Assign varied risk levels (High, Medium, Low) for non-compliant issues, and strictly use "Compliant" for positively compliant clauses.
+Return JSON strictly:
+{
+  "findings": [
+    {
+      "clause_id": "Unique short identifier",
+      "location": {
+        "page": 1,
+        "line": "Line 45",
+        "snippet": "The exact sentence or two containing the clause..."
+      },
+      "issue": "For non-compliant: specific explanation. For compliant: why this clause meets Indian legal standards.",
+      "sovereign_fix": "How to fix it (leave empty for Compliant).",
+      "clause": "FULL HEADING OF THE CLAUSE",
+      "risk": "High|Medium|Low|Compliant",
+      "discovery_method": "autonomous_discovery|compliance_engine"
+    }
+  ]
+}
+CRITICAL JSON RULE: Output MUST be strictly valid JSON only. No markdown, no text outside the JSON block."""
+
+    response = llm.invoke([
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=doc)
+    ])
+
+    try:
+        content_str = response.content
+        print(f"--- Commercial Agent Raw LLM Output (first 500 chars) ---")
+        print(content_str[:500])
+        import re
+        json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
+        if json_match:
+            ai_data = json.loads(json_match.group(0))
+        else:
+            ai_data = json.loads(content_str.replace("```json", "").replace("```", "").strip())
+        ai_findings = ai_data.get("findings", [])
+        print(f"--- Commercial Agent parsed {len(ai_findings)} findings ---")
+
+        prepared_findings = []
+        autonomous_count = 0
+        for f in ai_findings:
+            raw_method = f.get("discovery_method", "compliance_engine")
+            if raw_method not in ["autonomous_discovery", "compliance_engine"]:
+                raw_method = "compliance_engine"
+            if raw_method == "autonomous_discovery":
+                if autonomous_count >= 3:
+                    raw_method = "compliance_engine"
+                else:
+                    autonomous_count += 1
+
+            raw_risk = str(f.get("risk", "Medium")).strip()
+            normalized_risk = "Compliant" if raw_risk.lower() == "compliant" else raw_risk.capitalize()
+
+            prepared_findings.append({
+                "clause_id": f.get("clause_id", f.get("clause", "Unknown")),
+                "location": f.get("location", {"page": 1, "snippet": "Context not provided."}),
+                "issue": f.get("issue", f.get("analysis", "")),
+                "sovereign_fix": f.get("sovereign_fix", ""),
+                "risk": normalized_risk,
+                "clause": f.get("clause", "Unknown Clause"),
+                "discovery_method": raw_method
+            })
+        findings.extend(prepared_findings)
+        print(f"--- Commercial Compliant findings: {sum(1 for f in prepared_findings if f['risk'] == 'Compliant')} ---")
+    except Exception as e:
+        print(f"Commercial LLM parsing error: {e}")
+        print(f"Raw LLM Output was:\n{response.content}")
+
+    # FALLBACK: if not enough compliant findings and no risks found, re-prompt
+    compliant_count = sum(1 for f in findings if f.get("risk") == "Compliant")
+    non_compliant_count = sum(1 for f in findings if f.get("risk") != "Compliant")
+    if compliant_count < 10 and non_compliant_count == 0:
+        print("--- COMMERCIAL FALLBACK: Re-prompting for compliant findings ---")
+        fallback_prompt = (
+            "You are a Legal Compliance Auditor. The following document is FULLY COMPLIANT with Indian laws.\n"
+            "Your task: Extract EXACTLY 10 specific clauses from the document that demonstrate legal compliance.\n"
+            "For each clause, explain WHY it meets Indian legal standards (Indian Contract Act 1872, Companies Act 2013, etc.).\n\n"
+            "Return JSON strictly:\n"
+            '{\n'
+            '  "findings": [\n'
+            '    {\n'
+            '      "clause_id": "Unique ID",\n'
+            '      "location": {"page": 1, "line": "Line X", "snippet": "exact text from document"},\n'
+            '      "issue": "Detailed explanation of why this clause is compliant with Indian law",\n'
+            '      "sovereign_fix": "",\n'
+            '      "clause": "FULL HEADING OF THE CLAUSE",\n'
+            '      "risk": "Compliant",\n'
+            '      "discovery_method": "compliance_engine"\n'
+            '    }\n'
+            '  ]\n'
+            '}\n'
+            'CRITICAL: Return EXACTLY 10 findings. All must have "risk": "Compliant". Output ONLY valid JSON.'
+        )
+        try:
+            fb_response = llm.invoke([
+                SystemMessage(content=fallback_prompt),
+                HumanMessage(content=doc)
+            ])
+            fb_content = fb_response.content
+            import re
+            fb_match = re.search(r'\{.*\}', fb_content, re.DOTALL)
+            if fb_match:
+                fb_data = json.loads(fb_match.group(0))
+            else:
+                fb_data = json.loads(fb_content.replace("```json", "").replace("```", "").strip())
+            for f in fb_data.get("findings", []):
+                findings.append({
+                    "clause_id": f.get("clause_id", f.get("clause", "Unknown")),
+                    "location": f.get("location", {"page": 1, "snippet": "Context not provided."}),
+                    "issue": f.get("issue", ""),
+                    "sovereign_fix": "",
+                    "risk": "Compliant",
+                    "clause": f.get("clause", "Unknown Clause"),
+                    "discovery_method": "compliance_engine"
+                })
+            print(f"--- Commercial fallback added {len(fb_data.get('findings', []))} findings ---")
+        except Exception as e:
+            print(f"Commercial fallback error: {e}")
+
+    print(f"--- COMMERCIAL FINAL: {len(findings)} findings, Compliant: {sum(1 for f in findings if f.get('risk') == 'Compliant')} ---")
+    state["audit_results"] = state.get("audit_results", []) + [{"agent": "Commercial", "findings": findings}]
     state["next_agent"] = "drafting_agent"
     return state
 
@@ -196,7 +412,13 @@ Return JSON strictly: {{"revised_text": "...", "fixes_applied": [{{"legacy": "..
     ])
     
     try:
-        draft = json.loads(response.content.replace("```json", "").replace("```", "").strip())
+        content_str = response.content
+        import re
+        json_match = re.search(r'\{.*\}', content_str, re.DOTALL)
+        if json_match:
+            draft = json.loads(json_match.group(0))
+        else:
+            draft = json.loads(content_str.replace("```json", "").replace("```", "").strip())
     except:
         draft = {"revised_text": "Sovereign compliant drafted text.", "fixes_applied": []}
 
@@ -245,8 +467,13 @@ def formatter_node(state: ComplianceState) -> ComplianceState:
         
     feed = []
     for res in state["audit_results"]:
-        if res["agent"] == "Privacy":
-            for f in res.get("findings", []):
+        # Collect findings from both Privacy AND Commercial agents
+        if res["agent"] in ("Privacy", "Commercial"):
+            agent_findings = res.get("findings", [])
+            # Skip stub string value from old commercial_agent
+            if not isinstance(agent_findings, list):
+                continue
+            for f in agent_findings:
                 feed.append({
                     "clause_id": f.get("clause_id", ""),
                     "location": f.get("location", {}),
@@ -256,6 +483,7 @@ def formatter_node(state: ComplianceState) -> ComplianceState:
                     "risk": f.get("risk", "Medium"),
                     "discovery_method": f.get("discovery_method", "rule_engine")
                 })
+    print(f"--- formatter_node: built feed with {len(feed)} items, Compliant: {sum(1 for f in feed if f.get('risk') == 'Compliant')} ---")
                 
     source_veracity = f"Excerpt from uploaded document: \"{state['raw_document'][:150]}...\""
     

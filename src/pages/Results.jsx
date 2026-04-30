@@ -38,6 +38,11 @@ const Results = () => {
   const summaryStatus = reportData?.summary_card?.status || "Compliant";
 
   const feed = reportData?.compliance_feed || [];
+  console.log("=== COMPLIANCE FEED DEBUG ===");
+  console.log("Total feed items:", feed.length);
+  console.log("Feed items with risk=Compliant:", feed.filter(f => f.risk === 'Compliant').length);
+  console.log("All risk values:", feed.map(f => f.risk));
+  console.log("First 3 feed items:", JSON.stringify(feed.slice(0, 3), null, 2));
   const riskyItems = feed.filter(f => f.risk !== 'Compliant').map((f, i) => ({
     clause: f.clause?.substring(0, 40) + "..." || `Item ${i}`,
     type: "Compliance Issue",
@@ -70,10 +75,14 @@ const Results = () => {
 
   const riskLevel = getOverallRiskLevel(severityCounts);
 
+  const initialGreeting = riskyItems.length === 0 
+    ? "I've completed the compliance analysis. Great news! Your document is fully compliant with Indian regulations. I've identified several key reasons for this in the report. Do you have any questions about why specific sections are compliant?"
+    : "I've completed the compliance analysis based on Indian regulations.\n\nI've identified some potential risks. Do you have any questions about this analysis or the document?";
+
   const [chatHistory, setChatHistory] = useState([
     {
       role: "assistant",
-      content: "I've completed the compliance analysis based on Indian regulations (DPDPA 2023, Indian Contract Act).\n\nDo you have any questions about this analysis or the document?"
+      content: initialGreeting
     }
   ]);
   const [inputValue, setInputValue] = useState("");
@@ -271,12 +280,59 @@ const Results = () => {
             </section>
           ) : (
             <section className="mt-10">
-              <div className="rounded-xl border border-success/20 bg-success/5 p-8 text-center shadow-sm">
-                <ShieldCheck className="mx-auto mb-4 h-12 w-12 text-success" />
-                <h3 className="font-display text-2xl font-bold text-success">Document is Fully Compliant</h3>
-                <p className="mx-auto mt-2 max-w-lg text-sm text-foreground/80 leading-relaxed">
-                  Excellent! The analyzed document strictly adheres to Indian laws, including the DPDP Act 2023. No critical legal risks were detected.
-                </p>
+              <div className="rounded-xl border border-success/20 bg-success/5 p-8 shadow-sm">
+                <div className="text-center mb-8">
+                  <ShieldCheck className="mx-auto mb-4 h-12 w-12 text-success" />
+                  <h3 className="font-display text-2xl font-bold text-success">Document is Fully Compliant</h3>
+                  <p className="mx-auto mt-2 max-w-lg text-sm text-foreground/80 leading-relaxed">
+                    Excellent! The analyzed document strictly adheres to Indian laws. No critical legal risks were detected.
+                  </p>
+                </div>
+
+                <div className="mt-8 border-t border-success/10 pt-8">
+                  <div className="flex items-center gap-2 mb-6">
+                    <div className="rounded-full bg-success/10 p-1">
+                      <Lightbulb className="h-5 w-5 text-success" />
+                    </div>
+                    <h4 className="font-display text-lg font-semibold text-foreground">Why this document is compliant:</h4>
+                  </div>
+                  
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    {feed.filter(f => f.risk === 'Compliant').length > 0 ? (
+                      feed.filter(f => f.risk === 'Compliant').slice(0, 10).map((item, idx) => (
+                        <motion.div 
+                          key={idx}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: idx * 0.05 }}
+                          className="bg-background/50 dark:bg-card/50 rounded-xl p-4 border border-success/10 hover:border-success/30 transition-all shadow-sm group"
+                        >
+                          <div className="flex gap-3">
+                            <div className="flex-shrink-0 mt-1">
+                              <ShieldCheck className="h-4 w-4 text-success group-hover:scale-110 transition-transform" />
+                            </div>
+                            <div>
+                              <p className="text-sm font-bold text-foreground line-clamp-1">{item.clause}</p>
+                              <p className="text-xs text-muted-foreground mt-1 leading-relaxed line-clamp-3">{item.issue}</p>
+                            </div>
+                          </div>
+                        </motion.div>
+                      ))
+                    ) : (
+                      <div className="col-span-2 text-center py-6">
+                        <p className="text-sm text-muted-foreground">
+                          Compliance reasons are detailed in the Explainability section below. You can also ask the AI Legal Assistant for specific compliance details.
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {feed.filter(f => f.risk === 'Compliant').length > 10 && (
+                    <p className="mt-6 text-center text-xs text-muted-foreground italic">
+                      + {feed.filter(f => f.risk === 'Compliant').length - 10} more compliant markers identified in the detailed report below.
+                    </p>
+                  )}
+                </div>
               </div>
             </section>
           )}

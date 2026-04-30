@@ -42,3 +42,5 @@ venv/
 # Databases
 *.sqlite3
 *.db
+database/chroma_db/
+

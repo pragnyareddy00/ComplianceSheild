@@ -220,10 +220,6 @@ const UploadAnalyze = () => {
                       <span className="font-medium text-foreground block mb-1">Compliance Check</span>
                       "Check if this policy complies with Indian labor regulations."
                     </div>
-                    <div className="rounded-md bg-background px-3 py-2 border border-border">
-                      <span className="font-medium text-foreground block mb-1">Executive Summary</span>
-                      "Provide a simple, 3-paragraph summary of this financial report."
-                    </div>
                   </div>
                 </div>
 
